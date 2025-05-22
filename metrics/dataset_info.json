@@ -1,21 +1,21 @@
 {
   "original_image_shape": [
-    51,
-    51
+    102,
+    102
   ],
-  "train_size": 6751,
-  "test_size": 1688,
+  "train_size": 1510,
+  "test_size": 378,
   "train_class_counts": {
-    "COVID-19": 5996,
+    "COVID-19": 755,
     "Normal": 755
   },
   "test_class_counts": {
-    "COVID-19": 1499,
-    "Normal": 189
+    "Normal": 189,
+    "COVID-19": 189
   },
   "resize_to": {
-    "width": 51,
-    "height": 51
+    "width": 102,
+    "height": 102
   },
   "label_encoder_classes": [
     "COVID-19",

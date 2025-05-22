@@ -45,6 +45,9 @@ MAX_EPOCHS = 100 # the maximum number of epochs to train the model
 
 # ---- lOAD & PREPROCESS DATA ----
 categories = ["COVID-19", "Normal"]
+# track all image paths too
+paths, x, y = [], [], []
+widths, heights = [], []
 
 
 # compute the mean image size
@@ -60,29 +63,32 @@ for c in categories:
 if not widths:
     raise RuntimeError("No images found in {DATA_PATH}.")
 
-img_width = int(np.mean(widths) /10) # the mean width divided by 10
-img_height = int(np.mean(heights) /10) # the mean height divided by 10
-# resize to  10% of the mean size
+img_width = int(np.mean(widths) /5) # the mean width divided by 5
+img_height = int(np.mean(heights) /5) # the mean height divided by 5
+# resize to  5% of the mean size
 print(f"Resizing images to {img_width}x{img_height} pixels.")
 
 # load the images and Labels into numpy arrays
 # x: the images and y: the labels
-x, y = [], []
+paths, x, y = [], [], []
 for c in categories :
     for ext in ("*.jpg", "*.jpeg", "*.png"):
         for img_path in glob.glob(str(DATA_PATH / c / ext)):
             img = Image.open(img_path).convert("L").resize((img_width, img_height))
             x.append(np.array(img))
             y.append(c)
+            paths.append(img_path)  # FIX: Add the image path to the paths list
             
 x = np.stack(x, axis=0) # stack the images into a numpy array
 y = np.array(y) # convert the labels to a numpy array
+paths = np.array(paths) # convert the paths to a numpy array
 print("All Labels: ", y.shape)# print the shape of the labels
 print("All Images: ", x.shape)# print the shape of the images
+print("All Paths: ", paths.shape)# print the shape of the paths
 
 # split the data into training and testing sets
-x_train, x_test, y_train, y_test = train_test_split(
-    x, y, test_size=0.2, random_state=43, stratify=y
+x_train, x_test, y_train, y_test, paths_train, paths_test = train_test_split(
+    x, y, paths, test_size=0.2, random_state=43, stratify=y
 ) # stratify ensures that the same proportion of each class is present in both sets
 print("Train Labels: ", y_train.shape) # print the shape of the training labels
 print("Train Images: ", x_train.shape) # print the shape of the training images
@@ -223,8 +229,10 @@ history = model.fit(
 # Save the model
 model.save(MODELS / "covid19_model.keras") # save the model to a keras file
 
+
 # Save the training history
-history_df = pd.DataFrame(history.history).to_csv(METRICS / "training_history.csv", index=False) # convert the history to a pandas dataframe
+history_df = pd.DataFrame(history.history)
+history_df.to_csv(METRICS / "training_history.csv", index=False) # convert the history to a pandas dataframe
 
 # Threshold selection
 y_val_pred = model.predict(x_val).flatten()
@@ -244,6 +252,15 @@ with open(METRICS / "optimal_threshold.json", "w") as f:
 y_test_pred = model.predict(x_test).flatten()
 y_test_pred_labels = (y_test_pred >= opt_thresh).astype(int)
 
+# --- Save per‐image test results ---
+results_df = pd.DataFrame({
+    "filepath":             paths_test,
+    "true_label":           label_encoder.inverse_transform(y_test),
+    "predicted_prob":       y_test_pred,
+    "predicted_label":      label_encoder.inverse_transform(y_test_pred_labels),
+})
+results_df.to_csv(METRICS/"test_results.csv", index=False)
+
 # Classification report
 report = classification_report(y_test, y_test_pred_labels, target_names=categories)
 with open(METRICS / "classification_report.txt", "w") as f:
@@ -260,6 +277,15 @@ plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.savefig(METRICS / "confusion_matrix.png")
 plt.close()
+
+# Accuracy & F1 Score
+accuracy = accuracy_score(y_test, y_test_pred_labels)
+f1 = f1_score(y_test, y_test_pred_labels)
+with open(METRICS / "performance_scores.json", "w") as f:
+    json.dump({
+        "accuracy": accuracy,
+        "f1_score": f1
+    }, f, indent=2)
 
 # ROC & AUC
 auc = roc_auc_score(y_test, y_test_pred)
