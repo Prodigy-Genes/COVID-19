@@ -24,7 +24,7 @@ st.markdown("""
 <style>
     .main-header {
         font-size: 3rem;
-        color: #1f77b4;
+        color: #000000;
         text-align: center;
         margin-bottom: 2rem;
     }
@@ -33,6 +33,7 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #1f77b4;
+        color: #000000;
     }
     .prediction-box {
         padding: 1rem;
@@ -40,16 +41,39 @@ st.markdown("""
         text-align: center;
         font-size: 1.2rem;
         font-weight: bold;
+        margin: 1rem 0;
+        color: #000000;
     }
     .covid-positive {
         background-color: #ffebee;
-        color: #c62828;
-        border: 2px solid #c62828;
+        color: #000000;
+        border: 2px solid #000000;
     }
     .covid-negative {
         background-color: #e8f5e8;
-        color: #2e7d32;
-        border: 2px solid #2e7d32;
+        color: #000000;
+        border: 2px solid #000000;
+    }
+    .uncertain {
+        background-color: #fff3e0;
+        color: #000000;
+        border: 2px solid #000000;
+    }
+    .confidence-warning {
+        background-color: #fff3e0;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #000000;
+        margin: 1rem 0;
+        color: #000000;
+    }
+    .recommendation-box {
+        background-color: #e3f2fd;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #000000;
+        margin: 1rem 0;
+        color: #000000;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -59,6 +83,10 @@ BASE_PATH = Path(".")
 METRICS_PATH = BASE_PATH / "metrics"
 MODELS_PATH = BASE_PATH / "model"
 DEFAULT_THRESHOLD = 0.592  # Your specified threshold for 90% recall
+
+# Confidence thresholds
+COVID_CONFIDENCE_THRESHOLD = 0.90  # 90% confidence for COVID prediction
+NORMAL_CONFIDENCE_THRESHOLD = 0.80  # 80% confidence for Normal prediction
 
 @st.cache_resource
 def load_model():
@@ -144,13 +172,129 @@ def preprocess_image(image, target_size):
     
     return img_array
 
-def make_prediction(model, image_array, threshold):
-    """Make prediction with custom threshold"""
-    prediction_prob =1 - model.predict(image_array)[0][0]
-    prediction_label = "COVID-19" if prediction_prob >= threshold else "Normal"
-    confidence = prediction_prob if prediction_prob >= threshold else 1 - prediction_prob
+def make_enhanced_prediction(model, image_array, threshold, covid_conf_thresh=0.90, normal_conf_thresh=0.80):
+    """Make prediction with confidence-based classification"""
+    # Get raw prediction probability
+    prediction_prob = 1 - model.predict(image_array)[0][0]
     
-    return prediction_prob, prediction_label, confidence
+    # Determine prediction based on threshold
+    basic_prediction = "COVID-19" if prediction_prob >= threshold else "Normal"
+    
+    # Apply confidence thresholding
+    if basic_prediction == "COVID-19":
+        # For COVID prediction, need high confidence
+        if prediction_prob >= covid_conf_thresh:
+            final_prediction = "COVID-19"
+            confidence = prediction_prob
+            certainty_level = "High Confidence"
+        else:
+            final_prediction = "Uncertain - Consult Specialist"
+            confidence = prediction_prob
+            certainty_level = "Low Confidence"
+    else:
+        # For Normal prediction, need moderate confidence
+        normal_confidence = 1 - prediction_prob
+        if normal_confidence >= normal_conf_thresh:
+            final_prediction = "Normal"
+            confidence = normal_confidence
+            certainty_level = "High Confidence"
+        else:
+            final_prediction = "Uncertain - Consult Specialist"
+            confidence = max(prediction_prob, normal_confidence)
+            certainty_level = "Low Confidence"
+    
+    return {
+        'prediction_prob': prediction_prob,
+        'final_prediction': final_prediction,
+        'basic_prediction': basic_prediction,
+        'confidence': confidence,
+        'certainty_level': certainty_level,
+        'covid_confidence': prediction_prob,
+        'normal_confidence': 1 - prediction_prob
+    }
+
+def get_clinical_recommendation(prediction_result):
+    """Generate clinical recommendations based on prediction"""
+    pred = prediction_result['final_prediction']
+    confidence = prediction_result['confidence']
+    covid_prob = prediction_result['covid_confidence']
+    
+    if pred == "COVID-19":
+        return {
+            'title': '🔴 HIGH PRIORITY ACTION REQUIRED',
+            'message': f"""
+            **Immediate Recommendations:**
+            - Isolate immediately and follow local health guidelines
+            - Contact healthcare provider for RT-PCR confirmation
+            - Monitor symptoms closely
+            - Inform close contacts about potential exposure
+            
+            **Model Confidence:** {confidence:.1%} (High confidence COVID-19 detection)
+            """
+        }
+    elif pred == "Normal":
+        return {
+            'title': '✅ LOW RISK INDICATION',
+            'message': f"""
+            **Recommendations:**
+            - Continue regular health monitoring
+            - Follow standard prevention measures
+            - Consult healthcare provider if symptoms develop or worsen
+            - Consider retesting if exposure risk is high
+            
+            **Model Confidence:** {confidence:.1%} (High confidence normal scan)
+            """
+        }
+    else:  # Uncertain
+        return {
+            'title': '⚠️ INCONCLUSIVE RESULT - SPECIALIST CONSULTATION REQUIRED',
+            'message': f"""
+            **Critical Next Steps:**
+            - **Consult a healthcare specialist immediately**
+            - Request professional radiological interpretation
+            - Consider RT-PCR testing regardless of symptoms
+            - Do not rely solely on this AI screening
+            
+            **Why uncertain?**
+            - COVID probability: {covid_prob:.1%} (needs ≥90% for confident COVID diagnosis)
+            - Normal probability: {1-covid_prob:.1%} (needs ≥80% for confident normal diagnosis)
+            - The model cannot make a reliable determination
+            """
+        }
+
+def plot_confidence_visualization(prediction_result, covid_thresh, normal_thresh):
+    """Create confidence visualization"""
+    covid_prob = prediction_result['covid_confidence']
+    normal_prob = prediction_result['normal_confidence']
+    
+    # Create confidence bar chart
+    fig = go.Figure()
+    
+    # Add bars
+    fig.add_trace(go.Bar(
+        x=['Normal', 'COVID-19'],
+        y=[normal_prob, covid_prob],
+        marker_color=['green' if normal_prob >= normal_thresh else 'orange',
+                     'red' if covid_prob >= covid_thresh else 'orange'],
+        text=[f'{normal_prob:.1%}', f'{covid_prob:.1%}'],
+        textposition='auto',
+    ))
+    
+    # Add confidence threshold lines
+    fig.add_hline(y=normal_thresh, line_dash="dash", line_color="green", 
+                  annotation_text=f"Normal Confidence Threshold: {normal_thresh:.0%}")
+    fig.add_hline(y=covid_thresh, line_dash="dash", line_color="red",
+                  annotation_text=f"COVID Confidence Threshold: {covid_thresh:.0%}")
+    
+    fig.update_layout(
+        title="Prediction Confidence Analysis",
+        yaxis_title="Confidence Level",
+        xaxis_title="Predicted Class",
+        yaxis=dict(range=[0, 1], tickformat='.0%'),
+        showlegend=False
+    )
+    
+    return fig
 
 def plot_training_history(history_df):
     """Plot training history"""
@@ -263,12 +407,32 @@ def main():
     # Threshold selection
     optimal_threshold = metrics.get("optimal_threshold", {}).get("optimal_threshold", DEFAULT_THRESHOLD)
     threshold = st.sidebar.slider(
-        "Prediction Threshold",
+        "Base Prediction Threshold",
         min_value=0.0,
         max_value=1.0,
         value=float(optimal_threshold),
         step=0.001,
         help=f"Default threshold for 90% recall: {DEFAULT_THRESHOLD}"
+    )
+    
+    # Confidence threshold controls
+    st.sidebar.subheader("🎯 Confidence Thresholds")
+    covid_conf_thresh = st.sidebar.slider(
+        "COVID-19 Confidence Threshold",
+        min_value=0.50,
+        max_value=0.99,
+        value=COVID_CONFIDENCE_THRESHOLD,
+        step=0.01,
+        help="Minimum confidence required to predict COVID-19"
+    )
+    
+    normal_conf_thresh = st.sidebar.slider(
+        "Normal Confidence Threshold", 
+        min_value=0.50,
+        max_value=0.95,
+        value=NORMAL_CONFIDENCE_THRESHOLD,
+        step=0.01,
+        help="Minimum confidence required to predict Normal"
     )
     
     # Model info
@@ -292,10 +456,18 @@ def main():
     with tab1:
         st.header("Upload Image for Prediction")
         
+        # Important disclaimer
+        st.markdown("""
+        <div class="confidence-warning">
+        <strong>⚠️ Medical Disclaimer:</strong> This is an AI screening tool and should NOT replace professional medical diagnosis. 
+        Always consult healthcare professionals for medical decisions.
+        </div>
+        """, unsafe_allow_html=True)
+        
         uploaded_file = st.file_uploader(
             "Choose a chest X-ray image...",
             type=['png', 'jpg', 'jpeg'],
-            help="Upload a chest X-ray image to get COVID-19 prediction"
+            help="Upload a chest X-ray image to get COVID-19 screening"
         )
         
         if uploaded_file is not None:
@@ -315,42 +487,61 @@ def main():
                 
                 # Preprocess and predict
                 processed_image = preprocess_image(image, target_size)
-                prediction_prob, prediction_label, confidence = make_prediction(
-                    model, processed_image, threshold
+                prediction_result = make_enhanced_prediction(
+                    model, processed_image, threshold, covid_conf_thresh, normal_conf_thresh
                 )
                 
                 # Display prediction
-                st.subheader("Prediction Results")
+                st.subheader("AI Screening Results")
                 
-                # Prediction box
-                box_class = "covid-positive" if prediction_label == "COVID-19" else "covid-negative"
+                # Prediction box with appropriate styling
+                final_pred = prediction_result['final_prediction']
+                if final_pred == "COVID-19":
+                    box_class = "covid-positive"
+                elif final_pred == "Normal":
+                    box_class = "covid-negative"
+                else:
+                    box_class = "uncertain"
+                
                 st.markdown(
-                    f'<div class="prediction-box {box_class}">Prediction: {prediction_label}</div>',
+                    f'<div class="prediction-box {box_class}">{final_pred}</div>',
                     unsafe_allow_html=True
                 )
                 
                 # Metrics
-                col_a, col_b = st.columns(2)
+                col_a, col_b, col_c = st.columns(3)
                 with col_a:
-                    st.metric("Probability", f"{prediction_prob:.3f}")
+                    st.metric("COVID Probability", f"{prediction_result['covid_confidence']:.1%}")
                 with col_b:
-                    st.metric("Confidence", f"{confidence:.1%}")
-                
-                # Probability bar
-                st.subheader("Probability Distribution")
-                prob_data = pd.DataFrame({
-                    'Class': ['Normal', 'COVID-19'],
-                    'Probability': [1-prediction_prob, prediction_prob]
-                })
-                
-                fig_bar = px.bar(
-                    prob_data, x='Class', y='Probability',
-                    color='Class',
-                    color_discrete_map={'Normal': 'green', 'COVID-19': 'red'}
+                    st.metric("Normal Probability", f"{prediction_result['normal_confidence']:.1%}")
+                with col_c:
+                    st.metric("Certainty Level", prediction_result['certainty_level'])
+        
+            # Full-width sections
+            if uploaded_file is not None:
+                # Confidence visualization
+                st.subheader("Confidence Analysis")
+                confidence_fig = plot_confidence_visualization(
+                    prediction_result, covid_conf_thresh, normal_conf_thresh
                 )
-                fig_bar.add_hline(y=threshold, line_dash="dash", 
-                                 annotation_text=f"Threshold: {threshold:.3f}")
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(confidence_fig, use_container_width=True)
+                
+                # Clinical recommendations
+                recommendation = get_clinical_recommendation(prediction_result)
+                st.markdown(f"""
+                <div class="recommendation-box">
+                <h4>{recommendation['title']}</h4>
+                {recommendation['message']}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Technical details (collapsible)
+                with st.expander("🔧 Technical Details"):
+                    st.write(f"**Base prediction threshold:** {threshold:.3f}")
+                    st.write(f"**COVID confidence threshold:** {covid_conf_thresh:.1%}")
+                    st.write(f"**Normal confidence threshold:** {normal_conf_thresh:.1%}")
+                    st.write(f"**Raw COVID probability:** {prediction_result['prediction_prob']:.3f}")
+                    st.write(f"**Basic prediction (before confidence check):** {prediction_result['basic_prediction']}")
     
     with tab2:
         st.header("Model Analytics")
@@ -419,6 +610,44 @@ def main():
                 current_accuracy = (pred_labels_current == true_labels_binary).mean()
                 st.metric(f"Accuracy @ {threshold:.3f}", f"{current_accuracy:.3f}")
             
+            # Enhanced prediction analysis with confidence thresholds
+            st.subheader("Enhanced Prediction Analysis")
+            
+            # Apply enhanced prediction logic to test set
+            enhanced_predictions = []
+            for _, row in test_df.iterrows():
+                pred_prob = row['predicted_prob']
+                basic_pred = "COVID-19" if pred_prob >= threshold else "Normal"
+                
+                if basic_pred == "COVID-19" and pred_prob >= covid_conf_thresh:
+                    enhanced_pred = "COVID-19"
+                elif basic_pred == "Normal" and (1 - pred_prob) >= normal_conf_thresh:
+                    enhanced_pred = "Normal"
+                else:
+                    enhanced_pred = "Uncertain"
+                
+                enhanced_predictions.append(enhanced_pred)
+            
+            test_df_enhanced = test_df.copy()
+            test_df_enhanced['enhanced_prediction'] = enhanced_predictions
+            
+            # Summary of enhanced predictions
+            pred_counts = test_df_enhanced['enhanced_prediction'].value_counts()
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                covid_pred = pred_counts.get('COVID-19', 0)
+                st.metric("Confident COVID Predictions", covid_pred, 
+                         f"{covid_pred/len(test_df_enhanced):.1%} of total")
+            with col2:
+                normal_pred = pred_counts.get('Normal', 0)
+                st.metric("Confident Normal Predictions", normal_pred,
+                         f"{normal_pred/len(test_df_enhanced):.1%} of total")
+            with col3:
+                uncertain_pred = pred_counts.get('Uncertain', 0)
+                st.metric("Uncertain Cases", uncertain_pred,
+                         f"{uncertain_pred/len(test_df_enhanced):.1%} of total")
+            
             # Prediction distribution
             st.subheader("Prediction Probability Distribution")
             fig_hist = px.histogram(
@@ -426,37 +655,48 @@ def main():
                 nbins=50, title="Distribution of Prediction Probabilities"
             )
             fig_hist.add_vline(x=threshold, line_dash="dash", 
-                             annotation_text=f"Threshold: {threshold:.3f}")
+                             annotation_text=f"Base Threshold: {threshold:.3f}")
+            fig_hist.add_vline(x=covid_conf_thresh, line_dash="dot", line_color="red",
+                             annotation_text=f"COVID Confidence: {covid_conf_thresh:.1%}")
+            fig_hist.add_vline(x=1-normal_conf_thresh, line_dash="dot", line_color="green",
+                             annotation_text=f"Normal Confidence: {normal_conf_thresh:.1%}")
             st.plotly_chart(fig_hist, use_container_width=True)
             
             # Detailed results table
-            st.subheader("Detailed Test Results")
+            st.subheader("Enhanced Test Results")
             
             # Filter options
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 filter_class = st.selectbox("Filter by True Label", 
                                           ["All", "COVID-19", "Normal"])
             with col2:
+                filter_prediction = st.selectbox("Filter by Enhanced Prediction",
+                                               ["All", "COVID-19", "Normal", "Uncertain"])
+            with col3:
                 show_misclassified = st.checkbox("Show only misclassified")
             
             # Apply filters
-            filtered_df = test_df.copy()
+            filtered_df = test_df_enhanced.copy()
             if filter_class != "All":
                 filtered_df = filtered_df[filtered_df['true_label'] == filter_class]
             
+            if filter_prediction != "All":
+                filtered_df = filtered_df[filtered_df['enhanced_prediction'] == filter_prediction]
+            
             if show_misclassified:
-                # Add predicted labels with current threshold
-                filtered_df['predicted_label_current'] = np.where(
-                    filtered_df['predicted_prob'] >= threshold, 'COVID-19', 'Normal'
+                # Only show cases where enhanced prediction doesn't match true label
+                # (excluding uncertain cases as they're intentionally ambiguous)
+                misclassified = (
+                    (filtered_df['enhanced_prediction'] != 'Uncertain') &
+                    (filtered_df['true_label'] != filtered_df['enhanced_prediction'])
                 )
-                filtered_df = filtered_df[
-                    filtered_df['true_label'] != filtered_df['predicted_label_current']
-                ]
+                filtered_df = filtered_df[misclassified]
             
             # Display table
+            display_columns = ['filepath', 'true_label', 'predicted_prob', 'enhanced_prediction']
             st.dataframe(
-                filtered_df[['filepath', 'true_label', 'predicted_prob']],
+                filtered_df[display_columns],
                 use_container_width=True
             )
         else:
